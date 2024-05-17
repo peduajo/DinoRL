@@ -14,7 +14,7 @@ import torch.optim as optim
 
 import pyautogui
 
-from ptan import ptan
+import rl_utils as ptan
 
 import warnings
 warnings.filterwarnings('ignore')

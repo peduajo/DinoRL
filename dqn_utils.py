@@ -5,7 +5,7 @@ import numpy as np
 import math
 from types import SimpleNamespace
 
-from ptan import ptan
+import rl_utils as ptan
 from typing import List
 
 class DQN(nn.Module):
