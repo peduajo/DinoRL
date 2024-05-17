@@ -5,8 +5,77 @@ import numpy as np
 import math
 from types import SimpleNamespace
 
+import gymnasium as gym
+from gymnasium import spaces
+from collections import deque
+
 import rl_utils as ptan
 from typing import List
+
+
+class LazyFrames(object):
+    def __init__(self, frames):
+        """This object ensures that common frames between the observations are only stored once.
+        It exists purely to optimize memory usage which can be huge for DQN's 1M frames replay
+        buffers.
+        This object should only be converted to numpy array before being passed to the model.
+        You'd not believe how complex the previous solution was."""
+        self._frames = frames
+        self._out = None
+
+    def _force(self):
+        if self._out is None:
+            self._out = np.concatenate(self._frames, axis=0)
+            self._frames = None
+        return self._out
+
+    def __array__(self, dtype=None):
+        out = self._force()
+        if dtype is not None:
+            out = out.astype(dtype)
+        return out
+
+    def __len__(self):
+        return len(self._force())
+
+    def __getitem__(self, i):
+        return self._force()[i]
+
+    def count(self):
+        frames = self._force()
+        return frames.shape[1:frames.ndim]
+
+    def frame(self, i):
+        return self._force()[i, ...]
+
+class FrameStack(gym.Wrapper):
+    def __init__(self, env, k):
+        """Stack k last frames.
+        Returns lazy array, which is much more memory efficient.
+        See Also
+        --------
+        baselines.common.atari_wrappers.LazyFrames
+        """
+        gym.Wrapper.__init__(self, env)
+        self.k = k
+        self.frames = deque([], maxlen=k)
+        shp = env.observation_space.shape
+        self.observation_space = spaces.Box(low=0, high=255, shape=(shp[0]*k, shp[1], shp[2]), dtype=env.observation_space.dtype)
+
+    def reset(self):
+        ob = self.env.reset()
+        for _ in range(self.k):
+            self.frames.append(ob)
+        return self._get_ob()
+
+    def step(self, action):
+        ob, reward, done, info = self.env.step(action)
+        self.frames.append(ob)
+        return self._get_ob(), reward, done, info
+
+    def _get_ob(self):
+        assert len(self.frames) == self.k
+        return LazyFrames(list(self.frames))
 
 class DQN(nn.Module):
     def __init__(self, obs_size, action_size):
@@ -46,17 +115,15 @@ class DuelingDQN(nn.Module):
         )
 
         self.fc_adv = nn.Sequential(
-            #nn.Linear(256, 64),
             self.noisy_layers[0],
             nn.ReLU(),
             self.noisy_layers[1]
-            #nn.Linear(64, n_actions)
         )
 
         self.fc_val = nn.Sequential(
             nn.Linear(256, 64),
             nn.ReLU(),
-            nn.Linear(64, n_actions)
+            nn.Linear(64, 1)
         )
     
     def adv_val(self, x):
@@ -73,6 +140,57 @@ class DuelingDQN(nn.Module):
             for layer in self.noisy_layers
         ]
 
+class CNNDuelingDQN(nn.Module):
+    def __init__(self, obs_size, n_actions):
+        super(CNNDuelingDQN, self).__init__()
+
+        self.cnn = nn.Sequential(
+            nn.Conv2d(obs_size[0], 32, kernel_size=8, stride=4),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            nn.ReLU()
+        )
+
+        conv_out_size = self._get_conv_out(obs_size)
+
+        self.noisy_layers = [
+            NoisyFactorizedLinear(conv_out_size, 256),
+            NoisyFactorizedLinear(256, n_actions)
+        ]
+
+        self.fc_adv = nn.Sequential(
+            #nn.Linear(256, 64),
+            self.noisy_layers[0],
+            nn.ReLU(),
+            self.noisy_layers[1]
+            #nn.Linear(64, n_actions)
+        )
+
+        self.fc_val = nn.Sequential(
+            nn.Linear(conv_out_size, 256),
+            nn.ReLU(),
+            nn.Linear(256, 1)
+        )
+    
+    def adv_val(self, x):
+        conv_out = self.cnn(x).view(x.size()[0], -1)
+        return self.fc_adv(conv_out), self.fc_val(conv_out)
+    
+    def forward(self, x):
+        adv, val = self.adv_val(x)
+        return val + (adv - adv.mean(axis=1, keepdim=True))
+    
+    def _get_conv_out(self, shape):
+        o = self.cnn(torch.zeros(1, *shape))
+        return int(np.prod(o.size()))
+
+    def noisy_layers_sigma_snr(self):
+        return [
+            ((layer.weight ** 2).mean().sqrt() / (layer.sigma_weight ** 2).mean().sqrt()).item()
+            for layer in self.noisy_layers
+        ]
 
 class NoisyDQN(nn.Module):
     def __init__(self, obs_size, action_size):

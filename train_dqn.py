@@ -428,19 +428,6 @@ def counts_hash(obs):
 
 
 if __name__ == '__main__':
-    """
-    device = torch.device("cuda")
-    env = DinoEnv(device)
-    obs = env.reset()
-
-    done = False 
-
-    while not done:
-        action = env.action_space.sample()
-        print(action)
-        obs, reward, done, _= env.step(action)
-        print(obs)
-    """
     device = torch.device("cuda")
     env = DinoEnv(device)
     #env = PseudoCountRewardWrapper(env, reward_scale=dqn_simple_params.counts_reward_scale, hash_function=counts_hash)
